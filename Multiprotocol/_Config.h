@@ -374,6 +374,26 @@
 #define SCANNER_TELEMETRY			// Forward spectrum scanner data to TX
 #define FRSKY_RX_TELEMETRY			// Forward channels data to TX
 #define AFHDS2A_RX_TELEMETRY		// Forward channels data to TX
+
+/**********************************/
+/*** AFHDS2A DUAL-TX EXPERIMENT ***/
+/**********************************/
+// EXPERIMENTAL: let a second module control an already-bound receiver without binding.
+// The module first LISTENS to the primary remote's AFHDS2A stream, locks onto its hop
+// sequence, then transmits its own packets a fixed lead time *earlier* than the primary
+// on the same channel/slot. Hypothesis: the receiver locks onto whichever valid packet
+// arrives first (capture effect), giving this module priority over the primary.
+//
+// Both modules MUST share the exact same TX ID, RX ID and hop table, so those are forced
+// here (the hop table is derived from the TX ID, same as on the primary). Set the two IDs
+// to the values decoded from a capture of the working link (see flysky-analysis).
+// BENCH-TEST ONLY, props off: a timing bug means momentary loss of control.
+//#define AFHDS2A_LISTEN_SYNC
+#ifdef AFHDS2A_LISTEN_SYNC
+	#define AFHDS2A_SYNC_TXID	0x4C740A7D			// primary TX ID (on-air bytes 4C 74 0A 7D)
+	#define AFHDS2A_SYNC_RXID	"\xB0\xB0\xA5\x41"	// bound receiver ID (packet[5..8])
+	#define AFHDS2A_SYNC_LEAD	400					// transmit this many us before the primary
+#endif
 #define HOTT_FW_TELEMETRY			// Forward received telemetry packets to be decoded by erskyTX and OpenTX
 #define BAYANG_RX_TELEMETRY			// Forward channels data to TX
 

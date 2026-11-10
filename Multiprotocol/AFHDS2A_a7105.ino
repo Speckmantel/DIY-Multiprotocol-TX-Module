@@ -37,7 +37,15 @@ enum{
 	AFHDS2A_BIND4,
 	AFHDS2A_DATA_INIT,
 	AFHDS2A_DATA,
+#ifdef AFHDS2A_LISTEN_SYNC
+	AFHDS2A_SYNC_LISTEN,	// park in RX, wait to overhear the primary and lock the hop sequence
+	AFHDS2A_SYNC_RUN,		// transmit our own sticks AFHDS2A_SYNC_LEAD us ahead of the primary
+#endif
 };
+
+#ifdef AFHDS2A_LISTEN_SYNC
+static uint8_t afhds2a_sync_rx_armed;	// 1 once the A7105 has been strobed into RX for listening
+#endif
 
 static void AFHDS2A_calc_channels()
 {
@@ -478,6 +486,65 @@ uint16_t AFHDS2A_callback()
 			A7105_Strobe(A7105_RX);
 			phase &= ~AFHDS2A_WAIT_WRITE;
 			return 3850-AFHDS2A_WRITE_TIME;
+#ifdef AFHDS2A_LISTEN_SYNC
+		case AFHDS2A_SYNC_LISTEN:
+			// Park on one hop channel in RX and wait to overhear the primary remote.
+			// We only catch it once per full hop cycle (~62ms) here, which is fine for lock-on.
+			if(!afhds2a_sync_rx_armed)
+			{	// (re)arm the receiver on a known channel of the shared hop table
+				A7105_Strobe(A7105_STANDBY);
+				A7105_SetTxRxMode(RX_EN);
+				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[0]);
+				A7105_Strobe(A7105_RX);
+				afhds2a_sync_rx_armed = 1;
+				return 500;
+			}
+			if(A7105_ReadReg(A7105_00_MODE) & 0x01)
+				return 500;							// still listening, nothing received yet
+			if(!(A7105_ReadReg(A7105_00_MODE) & (1<<5)))	// CRC ok => a valid frame is in the FIFO
+			{
+				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+				{	// primary's stick packet on channel[0]; hi-nibble of byte 34 = its next hop index
+					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
+					afhds2a_sync_rx_armed = 0;
+					phase = AFHDS2A_SYNC_RUN;
+					// Primary transmitted ~now; its next packet is in 3850us on channel[next_hop].
+					// Schedule our transmit AFHDS2A_SYNC_LEAD us ahead of it.
+					return 3850 - AFHDS2A_SYNC_LEAD;
+				}
+			}
+			afhds2a_sync_rx_armed = 0;				// not ours / CRC fail: re-arm and keep listening
+			return 500;
+		case AFHDS2A_SYNC_RUN:
+			// Opportunistic resync: did we overhear the primary on this channel during the last gap?
+			if(afhds2a_sync_rx_armed && !(A7105_ReadReg(A7105_00_MODE) & 0x01)
+			   && !(A7105_ReadReg(A7105_00_MODE) & (1<<5)))
+			{
+				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+					hopping_frequency_no = (packet[34] >> 4) & 0x0F;	// re-anchor the hop position
+			}
+			// Transmit our own sticks, slightly ahead of the primary, on the current hop channel.
+			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
+			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no++]);
+			hopping_frequency_no &= 0x0F;
+			afhds2a_sync_rx_armed = 0;
+			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
+			return AFHDS2A_WRITE_TIME;
+		case AFHDS2A_SYNC_RUN|AFHDS2A_WAIT_WRITE:
+			// Wait for TX completion, then listen on the same channel so the next slot can resync.
+			start=micros();
+			while ((uint16_t)((uint16_t)micros()-start) < 700)
+				if(!(A7105_ReadReg(A7105_00_MODE) & 0x01))
+					break;
+			A7105_SetPower();
+			A7105_SetTxRxMode(RX_EN);
+			A7105_Strobe(A7105_RX);
+			afhds2a_sync_rx_armed = 1;				// FIFO may hold the primary's packet next slot
+			phase = AFHDS2A_SYNC_RUN;
+			return 3850 - AFHDS2A_WRITE_TIME;
+#endif
 	}
 	return 3850;
 }
@@ -485,6 +552,21 @@ uint16_t AFHDS2A_callback()
 void AFHDS2A_init()
 {
 	A7105_Init();
+
+#ifdef AFHDS2A_LISTEN_SYNC
+	// --- Experimental dual-TX: force the shared identity, then listen & sync to the primary ---
+	MProtocol_id = AFHDS2A_SYNC_TXID;			// fixed TX ID => fixed hop table, independent of RX_num
+	set_rx_tx_addr(MProtocol_id);
+	AFHDS2A_calc_channels();					// hop table derived from the forced TX ID (matches primary)
+	memcpy(rx_id, (const uint8_t *)AFHDS2A_SYNC_RXID, 4);	// bound receiver, no binding needed
+	packet_count = 0;
+	bind_phase = 0;
+	phase = AFHDS2A_SYNC_LISTEN;
+	afhds2a_sync_rx_armed = 0;
+	hopping_frequency_no = 0;
+	packet_sent = 0;
+	return;
+#endif
 
 	AFHDS2A_calc_channels();
 	packet_count = 0;
