@@ -38,13 +38,16 @@ enum{
 	AFHDS2A_DATA_INIT,
 	AFHDS2A_DATA,
 #ifdef AFHDS2A_LISTEN_SYNC
-	AFHDS2A_SYNC_LISTEN,	// park in RX, wait to overhear the primary and lock the hop sequence
+	AFHDS2A_SYNC_LISTEN,	// scan in RX, wait to overhear the primary and lock the hop sequence
 	AFHDS2A_SYNC_RUN,		// transmit our own sticks AFHDS2A_SYNC_LEAD us ahead of the primary
 #endif
 };
 
 #ifdef AFHDS2A_LISTEN_SYNC
 static uint8_t afhds2a_sync_rx_armed;	// 1 once the A7105 has been strobed into RX for listening
+static int8_t  afhds2a_sync_retry;		// scan dwell counter while searching for the primary
+// A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
+#define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
 
 static void AFHDS2A_calc_channels()
@@ -488,38 +491,38 @@ uint16_t AFHDS2A_callback()
 			return 3850-AFHDS2A_WRITE_TIME;
 #ifdef AFHDS2A_LISTEN_SYNC
 		case AFHDS2A_SYNC_LISTEN:
-			// Park on one hop channel in RX and wait to overhear the primary remote.
-			// We only catch it once per full hop cycle (~62ms) here, which is fine for lock-on.
-			if(!afhds2a_sync_rx_armed)
-			{	// (re)arm the receiver on a known channel of the shared hop table
-				A7105_Strobe(A7105_STANDBY);
-				A7105_SetTxRxMode(RX_EN);
-				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[0]);
-				A7105_Strobe(A7105_RX);
-				afhds2a_sync_rx_armed = 1;
-				return 500;
-			}
-			if(A7105_ReadReg(A7105_00_MODE) & 0x01)
-				return 500;							// still listening, nothing received yet
-			if(!(A7105_ReadReg(A7105_00_MODE) & (1<<5)))	// CRC ok => a valid frame is in the FIFO
+			// Scan the shared hop table in RX until we overhear the primary remote.
+			// The radio was armed into RX in init / on the last hop; we just poll here and
+			// only re-strobe RX when we move to the next channel (same idiom as AFHDS2A_Rx).
+			if(AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
-				{	// primary's stick packet on channel[0]; hi-nibble of byte 34 = its next hop index
+				{	// LOCKED: hi-nibble of byte 34 = the primary's next hop index
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
-					afhds2a_sync_rx_armed = 0;
+					LED_on;								// solid LED => locked onto the primary
 					phase = AFHDS2A_SYNC_RUN;
-					// Primary transmitted ~now; its next packet is in 3850us on channel[next_hop].
+					afhds2a_sync_rx_armed = 0;
+					// Primary just transmitted; its next packet is in 3850us on channel[next_hop].
 					// Schedule our transmit AFHDS2A_SYNC_LEAD us ahead of it.
 					return 3850 - AFHDS2A_SYNC_LEAD;
 				}
+				afhds2a_sync_retry = 0;				// heard something, but not our primary: keep scanning
 			}
-			afhds2a_sync_rx_armed = 0;				// not ours / CRC fail: re-arm and keep listening
-			return 500;
+			// Dwell >62ms per channel (one full primary hop cycle) so we are guaranteed to
+			// catch it, then hop to the next channel and re-arm RX.
+			if(afhds2a_sync_retry++ >= 10)
+			{
+				afhds2a_sync_retry = -160;			// ~160*385us ≈ 62ms dwell on each channel
+				hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
+				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
+				A7105_Strobe(A7105_RX);
+				LED_toggle;							// blink while searching
+			}
+			return 385;
 		case AFHDS2A_SYNC_RUN:
 			// Opportunistic resync: did we overhear the primary on this channel during the last gap?
-			if(afhds2a_sync_rx_armed && !(A7105_ReadReg(A7105_00_MODE) & 0x01)
-			   && !(A7105_ReadReg(A7105_00_MODE) & (1<<5)))
+			if(afhds2a_sync_rx_armed && AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
@@ -563,8 +566,14 @@ void AFHDS2A_init()
 	bind_phase = 0;
 	phase = AFHDS2A_SYNC_LISTEN;
 	afhds2a_sync_rx_armed = 0;
+	afhds2a_sync_retry = -160;								// start a full dwell on channel[0]
 	hopping_frequency_no = 0;
 	packet_sent = 0;
+	// Arm the receiver on the first hop channel so AFHDS2A_SYNC_LISTEN can hear the primary
+	A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[0]);
+	A7105_SetTxRxMode(RX_EN);
+	A7105_Strobe(A7105_RX);
+	LED_off;
 	return;
 #endif
 
