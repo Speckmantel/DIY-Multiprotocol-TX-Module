@@ -49,7 +49,7 @@ enum{
 static uint8_t afhds2a_sync_rx_armed;	// 1 once the A7105 has been strobed into RX for listening
 static int8_t  afhds2a_sync_retry;		// scan dwell counter while searching for the primary
 static uint16_t afhds2a_sync_txcount;	// transmitted-slot counter, for the debug heartbeat
-static uint8_t  afhds2a_sync_rxok;		// slots in the current heartbeat window where the primary was still heard
+static uint16_t afhds2a_sync_rxok;		// slots in the current heartbeat window where the primary was still heard (uint16_t: 256 must not wrap to 0)
 static uint8_t  afhds2a_sync_poll_cnt;	// oversample ticks spent listening for the primary this slot
 static uint8_t  afhds2a_sync_miss;		// consecutive slots the primary was not heard (triggers re-scan)
 static uint16_t afhds2a_sync_tx_start;	// micros() at our TX, to measure real packet airtime
