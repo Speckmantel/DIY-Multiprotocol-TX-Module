@@ -700,6 +700,11 @@ void AFHDS2A_init()
 	A7105_SetTxRxMode(RX_EN);
 	A7105_Strobe(A7105_RX);
 	debugln("AFHDS2A sync: listening for primary TXID %08lX", (uint32_t)AFHDS2A_SYNC_TXID);
+	debugln("AFHDS2A sync: addr=%02X %02X %02X %02X", rx_tx_addr[0], rx_tx_addr[1], rx_tx_addr[2], rx_tx_addr[3]);
+	debug("AFHDS2A sync: table=");
+	for(uint8_t i=0; i<AFHDS2A_NUMFREQ; i++)
+		debug("%d ", hopping_frequency[i]);
+	debugln("");
 	return;
 #endif
 
