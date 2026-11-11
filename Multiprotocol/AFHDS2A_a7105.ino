@@ -520,6 +520,8 @@ uint16_t AFHDS2A_callback()
 				A7105_SetTxRxMode(RX_EN);
 				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
 				A7105_Strobe(A7105_RX);
+				if(!(++afhds2a_sync_txcount & 0x07))	// ~every 8 hops (~0.5s): proves we are scanning
+					debugln("AFHDS2A sync: searching, ch=%d", hopping_frequency[hopping_frequency_no]);
 			}
 			return 385;
 		case AFHDS2A_SYNC_RUN:
