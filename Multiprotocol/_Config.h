@@ -391,7 +391,7 @@
 #define AFHDS2A_LISTEN_SYNC
 #ifdef AFHDS2A_LISTEN_SYNC
 	#define AFHDS2A_SYNC_TXID	0x4C740A7D			// primary TX ID (on-air bytes 4C 74 0A 7D)
-	#define AFHDS2A_SYNC_RXID	0xB0B0A541	// bound receiver ID (packet[5..8])
+	#define AFHDS2A_SYNC_RXID	0xB0B0A541			// bound receiver ID (on-air bytes B0 B0 A5 41)
 	#define AFHDS2A_SYNC_LEAD	400					// transmit this many us before the primary
 #endif
 #define HOTT_FW_TELEMETRY			// Forward received telemetry packets to be decoded by erskyTX and OpenTX
