@@ -602,10 +602,12 @@ uint16_t AFHDS2A_callback()
 			afhds2a_sync_airtime = (uint16_t)micros() - afhds2a_sync_tx_start;	// real airtime of our packet
 			A7105_SetPower();
 			A7105_SetTxRxMode(RX_EN);
-			A7105_Strobe(A7105_RX);
+			A7105_Strobe(A7105_RX);						// RX armed now; chip latches the primary when it arrives
 			afhds2a_sync_poll_cnt = 0;
 			phase = AFHDS2A_SYNC_POLL_WAIT;
-			return AFHDS2A_SYNC_POLL;					// first oversample tick
+			// ONE long coarse wait up to ~PREPOLL before the primary is due (the main loop services serial
+			// here, so no "Force update" spam), THEN fine-poll the short detection window.
+			return AFHDS2A_SYNC_LEAD - AFHDS2A_SYNC_PREPOLL;
 		case AFHDS2A_SYNC_POLL_WAIT:
 			// Oversample the receiver: one quick check per short tick, so we react within
 			// AFHDS2A_SYNC_POLL us of the primary actually landing and the main loop keeps running
@@ -662,7 +664,9 @@ uint16_t AFHDS2A_callback()
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
 			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			phase = AFHDS2A_SYNC_RUN;
-			return 3850 - AFHDS2A_SYNC_AIRTIME - (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
+			// elapsed this slot = AIRTIME (SYNC_RUN) + (LEAD-PREPOLL) coarse wait + fine polls
+			return 3850 - AFHDS2A_SYNC_AIRTIME - (AFHDS2A_SYNC_LEAD - AFHDS2A_SYNC_PREPOLL)
+					- (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
 #endif
 	}
 	return 3850;

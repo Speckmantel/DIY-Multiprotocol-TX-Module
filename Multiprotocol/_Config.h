@@ -392,18 +392,19 @@
 #ifdef AFHDS2A_LISTEN_SYNC
 	#define AFHDS2A_SYNC_TXID	0x4C740A7D			// primary TX ID (on-air bytes 4C 74 0A 7D)
 	#define AFHDS2A_SYNC_RXID	0xB0B0A541			// bound receiver ID (on-air bytes B0 B0 A5 41)
-	#define AFHDS2A_SYNC_LEAD	2000				// transmit this many us before the primary. Both packets
+	#define AFHDS2A_SYNC_LEAD	1900				// transmit this many us before the primary. Both packets
 												// (~AIRTIME each) plus gaps must fit in the 3850us slot, so
 												// LEAD must sit in (AIRTIME, 3850-AIRTIME): big enough that
 												// our TX finishes and we are in RX before the primary,
 												// small enough that the primary's packet still ends before
-												// the slot does. With AIRTIME~1600 that is ~1700..2250.
-	#define AFHDS2A_SYNC_POLL	200				// oversample the receiver this often (us) while waiting
-												// for the primary, instead of one long blocking wait.
-												// Reaction latency to a received packet is <= this, so
-												// smaller = tighter lock (floor ~100us: one SPI poll +
-												// main-loop overhead). The slot self-corrects, so this
-												// only bounds per-slot jitter.
+												// the slot does. With AIRTIME~1470 that is ~1700..2180.
+	#define AFHDS2A_SYNC_POLL	200				// fine-poll the receiver this often (us) in the detection
+												// window. Reaction latency <= this; the slot self-corrects
+												// so it only bounds per-slot jitter.
+	#define AFHDS2A_SYNC_PREPOLL	400				// start fine-polling this long (us) before the primary is
+												// due. We first do ONE long coarse wait (LEAD-PREPOLL) so the
+												// main loop can service serial (no "Force update" spam), then
+												// fine-poll only this short window around the primary.
 	#define AFHDS2A_SYNC_RESYNC_MAX	6000			// after coarse scan finds the primary's channel, listen
 												// RX-only (no TX) up to this long (us) - just over one
 												// slot - to catch its next packet with fine timing before
@@ -416,10 +417,9 @@
 												// it. Re-pin uses this so our TX lands LEAD before the
 												// primary. The "lost" debug line prints the measured
 												// airtime - set this to that value.
-	#define AFHDS2A_SYNC_LISTEN_MAX	2200			// give up listening this long (us) after we switch to RX
-												// (which is ~AIRTIME past our TX) and free-run one slot.
-												// Must be > LEAD (so the window reaches the primary) and
-												// AIRTIME+LISTEN_MAX must stay < 3850.
+	#define AFHDS2A_SYNC_LISTEN_MAX	800				// length (us) of the fine-poll detection window (after the
+												// coarse wait). Must be > PREPOLL plus margin for jitter,
+												// and (LEAD-PREPOLL)+AIRTIME+LISTEN_MAX must stay < 3850.
 	#define AFHDS2A_SYNC_MAX_MISS	20				// after this many consecutive slots without hearing the
 												// primary, drop back to the scan phase to re-acquire
 												// instead of free-running blind forever.
