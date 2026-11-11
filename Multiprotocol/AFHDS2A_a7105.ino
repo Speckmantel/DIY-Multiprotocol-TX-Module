@@ -38,6 +38,7 @@ enum{
 	AFHDS2A_DATA_INIT,
 	AFHDS2A_DATA,
 #ifdef AFHDS2A_LISTEN_SYNC
+	AFHDS2A_SYNC_LEARN,		// sweep channels and record the primary's real index->freq map by ear
 	AFHDS2A_SYNC_LISTEN,	// scan in RX (coarse), overhear the primary and find its channel/index
 	AFHDS2A_SYNC_RESYNC,	// fine RX-only full-slot listen to capture precise timing before we TX
 	AFHDS2A_SYNC_RUN,		// transmit our own sticks AFHDS2A_SYNC_LEAD us ahead of the primary
@@ -56,6 +57,9 @@ static uint16_t afhds2a_sync_tx_start;	// micros() at our TX, to measure real pa
 static uint16_t afhds2a_sync_airtime;	// measured airtime (us) of our last packet
 static uint8_t  afhds2a_sync_dbg_seen;	// DATA_READY events seen in the run window since last lock
 static uint8_t  afhds2a_sync_dbg_b0;		// packet[0] of the last frame seen in the run window
+static uint8_t  afhds2a_learn[AFHDS2A_NUMFREQ];	// primary's real freq for each hop index, learned by ear
+static uint16_t afhds2a_learn_mask;		// bit i set once afhds2a_learn[i] is known
+static uint8_t  afhds2a_learn_ch;		// which of our scan frequencies we are currently dwelling on
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -500,6 +504,60 @@ uint16_t AFHDS2A_callback()
 			phase &= ~AFHDS2A_WAIT_WRITE;
 			return 3850-AFHDS2A_WRITE_TIME;
 #ifdef AFHDS2A_LISTEN_SYNC
+		case AFHDS2A_SYNC_LEARN:
+			// The primary's hop table is NOT the one calc_channels() produces for this ID (same address,
+			// different order). So learn it: dwell on each of our scan frequencies long enough for one
+			// full primary cycle, and when we overhear the primary record learn[pkt_idx] = this frequency.
+			// Once all 16 indices are known, that IS the primary's real table.
+			if(AFHDS2A_SYNC_DATA_READY())
+			{
+				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+				{	// this packet's own index = (next_hop - 1); it was sent on the freq we're tuned to
+					uint8_t pkt_idx = ((packet[34] >> 4) - 1) & 0x0F;
+					if(!(afhds2a_learn_mask & (1 << pkt_idx)))
+					{
+						afhds2a_learn[pkt_idx] = hopping_frequency[afhds2a_learn_ch];
+						afhds2a_learn_mask |= (1 << pkt_idx);
+						debugln("AFHDS2A sync: learn idx=%d -> freq=%d (mask=%04X)",
+								pkt_idx, hopping_frequency[afhds2a_learn_ch], afhds2a_learn_mask);
+					}
+					afhds2a_sync_retry = 100;				// learned this channel: advance now
+				}
+				A7105_Strobe(A7105_STANDBY);				// re-arm (A7105 idles after one packet)
+				A7105_SetTxRxMode(RX_EN);
+				A7105_Strobe(A7105_RX);
+			}
+			if(afhds2a_sync_retry++ >= 22)					// ~22*3ms ≈ 66ms dwell (> one 62ms primary cycle)
+			{
+				afhds2a_sync_retry = 0;
+				if(afhds2a_learn_mask == 0xFFFF)
+				{	// full map known: adopt it as the real table and start acquiring
+					memcpy(hopping_frequency, afhds2a_learn, AFHDS2A_NUMFREQ);
+					debug("AFHDS2A sync: learned table=");
+					for(uint8_t i=0; i<AFHDS2A_NUMFREQ; i++)
+						debug("%d ", hopping_frequency[i]);
+					debugln("");
+					hopping_frequency_no = 0;
+					afhds2a_sync_retry = -12;
+					phase = AFHDS2A_SYNC_LISTEN;
+					A7105_Strobe(A7105_STANDBY);
+					A7105_SetTxRxMode(RX_EN);
+					A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[0]);
+					A7105_Strobe(A7105_RX);
+					return 3000;
+				}
+				if(++afhds2a_learn_ch >= AFHDS2A_NUMFREQ)
+				{	// swept our whole frequency set but still missing indices -> sets differ
+					debugln("AFHDS2A sync: learn incomplete mask=%04X, restarting sweep", afhds2a_learn_mask);
+					afhds2a_learn_ch = 0;					// retry; TODO full-spectrum sweep if this never completes
+				}
+				A7105_Strobe(A7105_STANDBY);
+				A7105_SetTxRxMode(RX_EN);
+				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[afhds2a_learn_ch]);
+				A7105_Strobe(A7105_RX);
+			}
+			return 3000;
 		case AFHDS2A_SYNC_LISTEN:
 			// Scan the shared hop table in RX until we overhear the primary remote.
 			// The A7105 goes idle after it receives one packet, so EVERY read must be
@@ -690,12 +748,14 @@ void AFHDS2A_init()
   rx_id[3] = (AFHDS2A_SYNC_RXID      ) & 0xFF;
 	packet_count = 0;
 	bind_phase = 0;
-	phase = AFHDS2A_SYNC_LISTEN;
+	phase = AFHDS2A_SYNC_LEARN;								// learn the primary's real hop table first
 	afhds2a_sync_rx_armed = 0;
-	afhds2a_sync_retry = -12;								// start a full dwell on channel[0]
+	afhds2a_sync_retry = 0;
+	afhds2a_learn_ch = 0;
+	afhds2a_learn_mask = 0;
 	hopping_frequency_no = 0;
 	packet_sent = 0;
-	// Arm the receiver on the first hop channel so AFHDS2A_SYNC_LISTEN can hear the primary
+	// Arm the receiver on the first scan frequency so AFHDS2A_SYNC_LEARN can hear the primary
 	A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[0]);
 	A7105_SetTxRxMode(RX_EN);
 	A7105_Strobe(A7105_RX);
