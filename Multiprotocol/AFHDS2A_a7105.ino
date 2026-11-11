@@ -40,6 +40,7 @@ enum{
 #ifdef AFHDS2A_LISTEN_SYNC
 	AFHDS2A_SYNC_LISTEN,	// scan in RX, wait to overhear the primary and lock the hop sequence
 	AFHDS2A_SYNC_RUN,		// transmit our own sticks AFHDS2A_SYNC_LEAD us ahead of the primary
+	AFHDS2A_SYNC_POLL_WAIT,	// oversample RX, returning short ticks, until the primary is heard
 #endif
 };
 
@@ -48,6 +49,7 @@ static uint8_t afhds2a_sync_rx_armed;	// 1 once the A7105 has been strobed into 
 static int8_t  afhds2a_sync_retry;		// scan dwell counter while searching for the primary
 static uint16_t afhds2a_sync_txcount;	// transmitted-slot counter, for the debug heartbeat
 static uint8_t  afhds2a_sync_rxok;		// slots in the current heartbeat window where the primary was still heard
+static uint8_t  afhds2a_sync_poll_cnt;	// oversample ticks spent listening for the primary this slot
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -538,43 +540,55 @@ uint16_t AFHDS2A_callback()
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
 			return AFHDS2A_WRITE_TIME;				// let our packet finish, then listen for the primary
 		case AFHDS2A_SYNC_RUN|AFHDS2A_WAIT_WRITE:
-			// Our packet is sent. Listen on the same channel for the primary and re-pin the slot clock
-			// to its real timing, so AFHDS2A_SYNC_LEAD is held every slot with no drift.
-			// Needs LEAD > AFHDS2A_WRITE_TIME so the primary still arrives after we start listening.
+			// Our packet is sent. Wait briefly for TX to finish, switch to RX, then start
+			// oversampling for the primary (AFHDS2A_SYNC_POLL_WAIT) instead of one long blocking
+			// wait. LEAD must stay > AFHDS2A_WRITE_TIME so the primary arrives after we start RX.
+			start=micros();
+			while ((uint16_t)((uint16_t)micros()-start) < 700)		// bounded wait for TX completion
+				if(!(A7105_ReadReg(A7105_00_MODE) & 0x01))
+					break;
 			A7105_SetPower();
 			A7105_SetTxRxMode(RX_EN);
 			A7105_Strobe(A7105_RX);
-			phase = AFHDS2A_SYNC_RUN;
-			start=micros();
-			while ((uint16_t)((uint16_t)micros()-start) < 2500)		// bounded wait for the primary
+			afhds2a_sync_poll_cnt = 0;
+			phase = AFHDS2A_SYNC_POLL_WAIT;
+			return AFHDS2A_SYNC_POLL;					// first oversample tick
+		case AFHDS2A_SYNC_POLL_WAIT:
+			// Oversample the receiver: one quick check per short tick, so we react within
+			// AFHDS2A_SYNC_POLL us of the primary actually landing and the main loop keeps running
+			// between ticks (no multi-ms CPU hog).
+			if(AFHDS2A_SYNC_DATA_READY())
 			{
-				if(AFHDS2A_SYNC_DATA_READY())
-				{
-					A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
-					if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
-					{	// primary heard now; its next packet (channel next_hop) is ~3850us away
-						hopping_frequency_no = (packet[34] >> 4) & 0x0F;
-						afhds2a_sync_rxok++;
-						if(!(++afhds2a_sync_txcount & 0xFF))
-						{
-							debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
-							afhds2a_sync_rxok = 0;
-						}
-						return 3850 - AFHDS2A_SYNC_LEAD;	// transmit LEAD before the primary's next packet
+				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+				{	// primary heard: re-pin to its real arrival. The scheduler accumulates our
+					// returns, so returning (3850-LEAD) now lands the next TX LEAD before the
+					// primary's next packet no matter which tick caught it -> auto phase-correction.
+					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
+					afhds2a_sync_rxok++;
+					if(!(++afhds2a_sync_txcount & 0xFF))
+					{
+						debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
+						afhds2a_sync_rxok = 0;
 					}
-					A7105_Strobe(A7105_STANDBY);			// stray frame: re-arm and keep waiting
-					A7105_SetTxRxMode(RX_EN);
-					A7105_Strobe(A7105_RX);
+					phase = AFHDS2A_SYNC_RUN;
+					return 3850 - AFHDS2A_SYNC_LEAD;
 				}
+				A7105_Strobe(A7105_STANDBY);				// stray frame: re-arm and keep oversampling
+				A7105_SetTxRxMode(RX_EN);
+				A7105_Strobe(A7105_RX);
 			}
-			// Primary not heard this slot: free-run one slot, advance the channel, retry next slot.
+			if(++afhds2a_sync_poll_cnt < (AFHDS2A_SYNC_LISTEN_MAX / AFHDS2A_SYNC_POLL))
+				return AFHDS2A_SYNC_POLL;					// not yet: next oversample tick
+			// Primary not heard this slot: free-run one nominal ~3850us slot, advance the channel.
 			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			if(!(++afhds2a_sync_txcount & 0xFF))
 			{
 				debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 MISS", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
 				afhds2a_sync_rxok = 0;
 			}
-			return 3850 - AFHDS2A_SYNC_LEAD;
+			phase = AFHDS2A_SYNC_RUN;
+			return 3850 - AFHDS2A_WRITE_TIME - (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
 #endif
 	}
 	return 3850;

@@ -397,6 +397,14 @@
 												// packet airtime, so our packet finishes before the
 												// primary's and we can still hear the primary to stay
 												// phase-locked. Sweep ~1600..2800.
+	#define AFHDS2A_SYNC_POLL	200				// oversample the receiver this often (us) while waiting
+												// for the primary, instead of one long blocking wait.
+												// Reaction latency to a received packet is <= this, so
+												// smaller = tighter lock (floor ~100us: one SPI poll +
+												// main-loop overhead). The slot self-corrects, so this
+												// only bounds per-slot jitter.
+	#define AFHDS2A_SYNC_LISTEN_MAX	1600			// give up listening after this long (us) past our TX
+												// and free-run one nominal slot. Must stay < 3850-WRITE.
 #endif
 #define HOTT_FW_TELEMETRY			// Forward received telemetry packets to be decoded by erskyTX and OpenTX
 #define BAYANG_RX_TELEMETRY			// Forward channels data to TX
