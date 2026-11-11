@@ -519,7 +519,7 @@ uint16_t AFHDS2A_callback()
 			// catch it, then hop to the next channel and re-strobe RX (the only place RX is re-armed).
 			if(afhds2a_sync_retry++ >= 10)
 			{
-				afhds2a_sync_retry = -160;			// ~160*385us ≈ 62ms dwell on each channel
+				afhds2a_sync_retry = -12;			// ~22*3ms ≈ 66ms dwell (> one 62ms primary cycle)
 				hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 				A7105_Strobe(A7105_STANDBY);
 				A7105_SetTxRxMode(RX_EN);
@@ -528,7 +528,9 @@ uint16_t AFHDS2A_callback()
 				if(!(++afhds2a_sync_txcount & 0x3F))	// ~every 64 hops (~4s): just proves we are alive
 					debugln("AFHDS2A sync: searching...");
 			}
-			return 385;
+			// Poll at ~3ms: slow enough that the main loop can service serial itself (no
+			// "Force update" spam), fast enough to catch the primary within its 62ms dwell.
+			return 3000;
 		case AFHDS2A_SYNC_RUN:
 			// Opportunistic resync: did we overhear the primary on this channel during the last gap?
 			if(afhds2a_sync_rx_armed && AFHDS2A_SYNC_DATA_READY())
