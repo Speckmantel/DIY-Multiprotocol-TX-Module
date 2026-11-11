@@ -47,6 +47,7 @@ enum{
 static uint8_t afhds2a_sync_rx_armed;	// 1 once the A7105 has been strobed into RX for listening
 static int8_t  afhds2a_sync_retry;		// scan dwell counter while searching for the primary
 static uint16_t afhds2a_sync_txcount;	// transmitted-slot counter, for the debug heartbeat
+static uint8_t  afhds2a_sync_rxok;		// slots in the current heartbeat window where the primary was still heard
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -535,14 +536,20 @@ uint16_t AFHDS2A_callback()
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+				{
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;	// re-anchor the hop position
+					afhds2a_sync_rxok++;				// count slots where we still hear the primary
+				}
 			}
 			// Transmit our own sticks, slightly ahead of the primary, on the current hop channel.
 			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
 			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no++]);
 			hopping_frequency_no &= 0x0F;
 			if(!(++afhds2a_sync_txcount & 0xFF))		// ~every 256 slots (~1s)
-				debugln("AFHDS2A sync: TX running, hop=%d", hopping_frequency_no);
+			{	// primary_rx/256 = how many recent slots stayed aligned with the primary
+				debugln("AFHDS2A sync: TX running, lead=%d primary_rx=%d/256", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
+				afhds2a_sync_rxok = 0;
+			}
 			afhds2a_sync_rx_armed = 0;
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
 			return AFHDS2A_WRITE_TIME;
