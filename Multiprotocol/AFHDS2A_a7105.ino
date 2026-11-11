@@ -51,6 +51,10 @@ static uint16_t afhds2a_sync_txcount;	// transmitted-slot counter, for the debug
 static uint8_t  afhds2a_sync_rxok;		// slots in the current heartbeat window where the primary was still heard
 static uint8_t  afhds2a_sync_poll_cnt;	// oversample ticks spent listening for the primary this slot
 static uint8_t  afhds2a_sync_miss;		// consecutive slots the primary was not heard (triggers re-scan)
+static uint16_t afhds2a_sync_tx_start;	// micros() at our TX, to measure real packet airtime
+static uint16_t afhds2a_sync_airtime;	// measured airtime (us) of our last packet
+static uint8_t  afhds2a_sync_dbg_seen;	// DATA_READY events seen in the run window since last lock
+static uint8_t  afhds2a_sync_dbg_b0;		// packet[0] of the last frame seen in the run window
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -509,6 +513,7 @@ uint16_t AFHDS2A_callback()
 					phase = AFHDS2A_SYNC_RUN;
 					afhds2a_sync_rx_armed = 0;
 					afhds2a_sync_miss = 0;					// fresh lock
+					afhds2a_sync_dbg_seen = 0;
 					// DATA_READY fires at the END of the primary's packet, so its next packet starts
 					// only (3850-AIRTIME) from now. Schedule our first TX AFHDS2A_SYNC_LEAD ahead of it.
 					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
@@ -539,6 +544,7 @@ uint16_t AFHDS2A_callback()
 			// Transmit our sticks on the primary's current channel (index set by the last re-sync).
 			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
 			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no]);
+			afhds2a_sync_tx_start = micros();			// to measure real airtime in WAIT_WRITE
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
 			return AFHDS2A_SYNC_AIRTIME;				// only our own packet airtime, so we switch to RX
 													// ~(LEAD-AIRTIME) before the primary and don't miss
@@ -551,6 +557,7 @@ uint16_t AFHDS2A_callback()
 			while ((uint16_t)((uint16_t)micros()-start) < 700)		// bounded wait for TX completion
 				if(!(A7105_ReadReg(A7105_00_MODE) & 0x01))
 					break;
+			afhds2a_sync_airtime = (uint16_t)micros() - afhds2a_sync_tx_start;	// real airtime of our packet
 			A7105_SetPower();
 			A7105_SetTxRxMode(RX_EN);
 			A7105_Strobe(A7105_RX);
@@ -564,6 +571,8 @@ uint16_t AFHDS2A_callback()
 			if(AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				afhds2a_sync_dbg_seen++;					// diag: a frame landed in the run window
+				afhds2a_sync_dbg_b0 = packet[0];
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
 				{	// primary heard: re-pin to its packet START. DATA_READY fires at the END of the
 					// primary's packet, so its next packet starts only (3850-AIRTIME) from now. The
@@ -571,6 +580,7 @@ uint16_t AFHDS2A_callback()
 					// the primary's next packet no matter which tick caught it -> one-slot phase-lock.
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
 					afhds2a_sync_miss = 0;					// primary heard: lock is healthy
+					afhds2a_sync_dbg_seen = 0;
 					afhds2a_sync_rxok++;
 					if(!(++afhds2a_sync_txcount & 0xFF))
 					{
@@ -594,8 +604,10 @@ uint16_t AFHDS2A_callback()
 			}
 			if(++afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
 			{	// Lock lost: stop free-running blind and drop back to the scan phase to re-acquire.
-				debugln("AFHDS2A sync: lock lost after %d misses, re-scanning", afhds2a_sync_miss);
+				debugln("AFHDS2A sync: lost. airtime=%d ch=%d frames_in_window=%d last_b0=%02X",
+						afhds2a_sync_airtime, hopping_frequency[hopping_frequency_no], afhds2a_sync_dbg_seen, afhds2a_sync_dbg_b0);
 				afhds2a_sync_miss = 0;
+				afhds2a_sync_dbg_seen = 0;
 				afhds2a_sync_retry = -12;				// start a full dwell, like init
 				afhds2a_sync_rx_armed = 0;
 				A7105_Strobe(A7105_STANDBY);

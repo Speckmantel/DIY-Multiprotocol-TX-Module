@@ -392,23 +392,25 @@
 #ifdef AFHDS2A_LISTEN_SYNC
 	#define AFHDS2A_SYNC_TXID	0x4C740A7D			// primary TX ID (on-air bytes 4C 74 0A 7D)
 	#define AFHDS2A_SYNC_RXID	0xB0B0A541			// bound receiver ID (on-air bytes B0 B0 A5 41)
-	#define AFHDS2A_SYNC_LEAD	1800				// transmit this many us before the primary
-												// MUST be > AFHDS2A_WRITE_TIME (1550/1700) and > ~1.4ms
-												// packet airtime, so our packet finishes before the
-												// primary's and we can still hear the primary to stay
-												// phase-locked. Sweep ~1600..2800.
+	#define AFHDS2A_SYNC_LEAD	2000				// transmit this many us before the primary. Both packets
+												// (~AIRTIME each) plus gaps must fit in the 3850us slot, so
+												// LEAD must sit in (AIRTIME, 3850-AIRTIME): big enough that
+												// our TX finishes and we are in RX before the primary,
+												// small enough that the primary's packet still ends before
+												// the slot does. With AIRTIME~1600 that is ~1700..2250.
 	#define AFHDS2A_SYNC_POLL	200				// oversample the receiver this often (us) while waiting
 												// for the primary, instead of one long blocking wait.
 												// Reaction latency to a received packet is <= this, so
 												// smaller = tighter lock (floor ~100us: one SPI poll +
 												// main-loop overhead). The slot self-corrects, so this
 												// only bounds per-slot jitter.
-	#define AFHDS2A_SYNC_AIRTIME	1350			// on-air duration (us) of one AFHDS2A packet. The RX
+	#define AFHDS2A_SYNC_AIRTIME	1600			// on-air duration (us) of one AFHDS2A packet. The RX
 												// flags "data ready" at the END of the primary's packet,
 												// but the primary's NEXT packet starts 3850us after this
 												// one STARTED, i.e. only (3850-AIRTIME) after we detect
 												// it. Re-pin uses this so our TX lands LEAD before the
-												// primary. If lock fails, sweep this ~1200..1500.
+												// primary. The "lost" debug line prints the measured
+												// airtime - set this to that value.
 	#define AFHDS2A_SYNC_LISTEN_MAX	2200			// give up listening this long (us) after we switch to RX
 												// (which is ~AIRTIME past our TX) and free-run one slot.
 												// Must be > LEAD (so the window reaches the primary) and
