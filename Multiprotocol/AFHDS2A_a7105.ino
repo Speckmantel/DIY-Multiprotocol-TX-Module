@@ -532,40 +532,49 @@ uint16_t AFHDS2A_callback()
 			// "Force update" spam), fast enough to catch the primary within its 62ms dwell.
 			return 3000;
 		case AFHDS2A_SYNC_RUN:
-			// Opportunistic resync: did we overhear the primary on this channel during the last gap?
-			if(afhds2a_sync_rx_armed && AFHDS2A_SYNC_DATA_READY())
-			{
-				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
-				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
-				{
-					hopping_frequency_no = (packet[34] >> 4) & 0x0F;	// re-anchor the hop position
-					afhds2a_sync_rxok++;				// count slots where we still hear the primary
-				}
-			}
-			// Transmit our own sticks, slightly ahead of the primary, on the current hop channel.
+			// Transmit our sticks on the primary's current channel (index set by the last re-sync).
 			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
-			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no++]);
-			hopping_frequency_no &= 0x0F;
-			if(!(++afhds2a_sync_txcount & 0xFF))		// ~every 256 slots (~1s)
-			{	// primary_rx/256 = how many recent slots stayed aligned with the primary
-				debugln("AFHDS2A sync: TX running, lead=%d primary_rx=%d/256", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
-				afhds2a_sync_rxok = 0;
-			}
-			afhds2a_sync_rx_armed = 0;
+			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no]);
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
-			return AFHDS2A_WRITE_TIME;
+			return AFHDS2A_WRITE_TIME;				// let our packet finish, then listen for the primary
 		case AFHDS2A_SYNC_RUN|AFHDS2A_WAIT_WRITE:
-			// Wait for TX completion, then listen on the same channel so the next slot can resync.
-			start=micros();
-			while ((uint16_t)((uint16_t)micros()-start) < 700)
-				if(!(A7105_ReadReg(A7105_00_MODE) & 0x01))
-					break;
+			// Our packet is sent. Listen on the same channel for the primary and re-pin the slot clock
+			// to its real timing, so AFHDS2A_SYNC_LEAD is held every slot with no drift.
+			// Needs LEAD > AFHDS2A_WRITE_TIME so the primary still arrives after we start listening.
 			A7105_SetPower();
 			A7105_SetTxRxMode(RX_EN);
 			A7105_Strobe(A7105_RX);
-			afhds2a_sync_rx_armed = 1;				// FIFO may hold the primary's packet next slot
 			phase = AFHDS2A_SYNC_RUN;
-			return 3850 - AFHDS2A_WRITE_TIME;
+			start=micros();
+			while ((uint16_t)((uint16_t)micros()-start) < 2500)		// bounded wait for the primary
+			{
+				if(AFHDS2A_SYNC_DATA_READY())
+				{
+					A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+					if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+					{	// primary heard now; its next packet (channel next_hop) is ~3850us away
+						hopping_frequency_no = (packet[34] >> 4) & 0x0F;
+						afhds2a_sync_rxok++;
+						if(!(++afhds2a_sync_txcount & 0xFF))
+						{
+							debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
+							afhds2a_sync_rxok = 0;
+						}
+						return 3850 - AFHDS2A_SYNC_LEAD;	// transmit LEAD before the primary's next packet
+					}
+					A7105_Strobe(A7105_STANDBY);			// stray frame: re-arm and keep waiting
+					A7105_SetTxRxMode(RX_EN);
+					A7105_Strobe(A7105_RX);
+				}
+			}
+			// Primary not heard this slot: free-run one slot, advance the channel, retry next slot.
+			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
+			if(!(++afhds2a_sync_txcount & 0xFF))
+			{
+				debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 MISS", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
+				afhds2a_sync_rxok = 0;
+			}
+			return 3850 - AFHDS2A_SYNC_LEAD;
 #endif
 	}
 	return 3850;
