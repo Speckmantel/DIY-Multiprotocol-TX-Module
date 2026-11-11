@@ -511,10 +511,17 @@ uint16_t AFHDS2A_callback()
 				{	// Channel found. hi-nibble of byte 34 = the primary's next hop index. Coarse scan
 					// timing is stale (up to one poll), so DON'T start TX yet: move to the next channel
 					// and do a fine RX-only listen there to capture the next packet with precise timing.
-					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
-					debugln("AFHDS2A sync: channel found, next hop=%d, re-syncing", hopping_frequency_no);
+					{	// diag: if our table matches the primary, the index we were dwelling on equals
+						// the packet's own index = (next_hop-1). If they differ, our hop table is wrong.
+						uint8_t next_hop = (packet[34] >> 4) & 0x0F;
+						debugln("AFHDS2A sync: caught dwell_idx=%d (freq=%d) pkt_idx=%d next_hop=%d",
+								hopping_frequency_no, hopping_frequency[hopping_frequency_no],
+								(next_hop-1)&0x0F, next_hop);
+						hopping_frequency_no = next_hop;
+					}
 					afhds2a_sync_rx_armed = 0;
 					afhds2a_sync_poll_cnt = 0;
+					afhds2a_sync_dbg_seen = 0;
 					A7105_Strobe(A7105_STANDBY);
 					A7105_SetTxRxMode(RX_EN);
 					A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
@@ -552,6 +559,8 @@ uint16_t AFHDS2A_callback()
 			if(AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				afhds2a_sync_dbg_seen++;					// diag: ANY frame on this channel this slot
+				afhds2a_sync_dbg_b0 = packet[0];
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
 				{	// precise lock: re-pin exactly as a running slot would, then start transmitting
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
@@ -568,7 +577,9 @@ uint16_t AFHDS2A_callback()
 			if(++afhds2a_sync_poll_cnt < (AFHDS2A_SYNC_RESYNC_MAX / AFHDS2A_SYNC_POLL))
 				return AFHDS2A_SYNC_POLL;
 			// A full slot with no primary on this channel: the scan channel/index was wrong. Re-scan.
-			debugln("AFHDS2A sync: re-sync timeout on ch=%d, re-scanning", hopping_frequency[hopping_frequency_no]);
+			debugln("AFHDS2A sync: re-sync timeout ch=%d frames=%d last_b0=%02X, re-scanning",
+					hopping_frequency[hopping_frequency_no], afhds2a_sync_dbg_seen, afhds2a_sync_dbg_b0);
+			afhds2a_sync_dbg_seen = 0;
 			afhds2a_sync_retry = -12;
 			afhds2a_sync_rx_armed = 0;
 			A7105_Strobe(A7105_STANDBY);

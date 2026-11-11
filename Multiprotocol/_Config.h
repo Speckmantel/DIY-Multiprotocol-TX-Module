@@ -404,7 +404,7 @@
 												// smaller = tighter lock (floor ~100us: one SPI poll +
 												// main-loop overhead). The slot self-corrects, so this
 												// only bounds per-slot jitter.
-	#define AFHDS2A_SYNC_RESYNC_MAX	4100			// after coarse scan finds the primary's channel, listen
+	#define AFHDS2A_SYNC_RESYNC_MAX	6000			// after coarse scan finds the primary's channel, listen
 												// RX-only (no TX) up to this long (us) - just over one
 												// slot - to catch its next packet with fine timing before
 												// we start transmitting. Coarse scan is stale by up to its
