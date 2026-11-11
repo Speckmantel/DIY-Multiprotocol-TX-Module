@@ -404,7 +404,12 @@
 												// smaller = tighter lock (floor ~100us: one SPI poll +
 												// main-loop overhead). The slot self-corrects, so this
 												// only bounds per-slot jitter.
-	#define AFHDS2A_SYNC_AIRTIME	1600			// on-air duration (us) of one AFHDS2A packet. The RX
+	#define AFHDS2A_SYNC_RESYNC_MAX	4100			// after coarse scan finds the primary's channel, listen
+												// RX-only (no TX) up to this long (us) - just over one
+												// slot - to catch its next packet with fine timing before
+												// we start transmitting. Coarse scan is stale by up to its
+												// poll interval, which would otherwise desync our hop index.
+	#define AFHDS2A_SYNC_AIRTIME	1470			// on-air duration (us) of one AFHDS2A packet. The RX
 												// flags "data ready" at the END of the primary's packet,
 												// but the primary's NEXT packet starts 3850us after this
 												// one STARTED, i.e. only (3850-AIRTIME) after we detect

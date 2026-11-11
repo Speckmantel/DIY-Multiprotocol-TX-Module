@@ -38,7 +38,8 @@ enum{
 	AFHDS2A_DATA_INIT,
 	AFHDS2A_DATA,
 #ifdef AFHDS2A_LISTEN_SYNC
-	AFHDS2A_SYNC_LISTEN,	// scan in RX, wait to overhear the primary and lock the hop sequence
+	AFHDS2A_SYNC_LISTEN,	// scan in RX (coarse), overhear the primary and find its channel/index
+	AFHDS2A_SYNC_RESYNC,	// fine RX-only full-slot listen to capture precise timing before we TX
 	AFHDS2A_SYNC_RUN,		// transmit our own sticks AFHDS2A_SYNC_LEAD us ahead of the primary
 	AFHDS2A_SYNC_POLL_WAIT,	// oversample RX, returning short ticks, until the primary is heard
 #endif
@@ -507,16 +508,19 @@ uint16_t AFHDS2A_callback()
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
-				{	// LOCKED: hi-nibble of byte 34 = the primary's next hop index
+				{	// Channel found. hi-nibble of byte 34 = the primary's next hop index. Coarse scan
+					// timing is stale (up to one poll), so DON'T start TX yet: move to the next channel
+					// and do a fine RX-only listen there to capture the next packet with precise timing.
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
-					debugln("AFHDS2A sync: LOCKED, next hop=%d", hopping_frequency_no);
-					phase = AFHDS2A_SYNC_RUN;
+					debugln("AFHDS2A sync: channel found, next hop=%d, re-syncing", hopping_frequency_no);
 					afhds2a_sync_rx_armed = 0;
-					afhds2a_sync_miss = 0;					// fresh lock
-					afhds2a_sync_dbg_seen = 0;
-					// DATA_READY fires at the END of the primary's packet, so its next packet starts
-					// only (3850-AIRTIME) from now. Schedule our first TX AFHDS2A_SYNC_LEAD ahead of it.
-					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
+					afhds2a_sync_poll_cnt = 0;
+					A7105_Strobe(A7105_STANDBY);
+					A7105_SetTxRxMode(RX_EN);
+					A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
+					A7105_Strobe(A7105_RX);
+					phase = AFHDS2A_SYNC_RESYNC;
+					return AFHDS2A_SYNC_POLL;
 				}
 				// Not our primary (noise / other traffic): re-arm RX on the SAME channel and keep
 				// dwelling, so a stray packet can't make us skip past the channel the primary uses.
@@ -539,6 +543,39 @@ uint16_t AFHDS2A_callback()
 			}
 			// Poll at ~3ms: slow enough that the main loop can service serial itself (no
 			// "Force update" spam), fast enough to catch the primary within its 62ms dwell.
+			return 3000;
+		case AFHDS2A_SYNC_RESYNC:
+			// Fine, RX-only, up-to-one-slot listen on channel[next_hop]. We are NOT transmitting, so
+			// there is no deaf window: the primary's packet on this channel is guaranteed to arrive
+			// within one slot. Catching it here gives a precise timestamp + hop index, so the first
+			// real TX in SYNC_RUN is correctly phased (coarse scan alone desyncs the hop index).
+			if(AFHDS2A_SYNC_DATA_READY())
+			{
+				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
+				{	// precise lock: re-pin exactly as a running slot would, then start transmitting
+					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
+					debugln("AFHDS2A sync: LOCKED (fine), next hop=%d", hopping_frequency_no);
+					afhds2a_sync_miss = 0;
+					afhds2a_sync_dbg_seen = 0;
+					phase = AFHDS2A_SYNC_RUN;
+					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
+				}
+				A7105_Strobe(A7105_STANDBY);				// stray frame: re-arm and keep listening
+				A7105_SetTxRxMode(RX_EN);
+				A7105_Strobe(A7105_RX);
+			}
+			if(++afhds2a_sync_poll_cnt < (AFHDS2A_SYNC_RESYNC_MAX / AFHDS2A_SYNC_POLL))
+				return AFHDS2A_SYNC_POLL;
+			// A full slot with no primary on this channel: the scan channel/index was wrong. Re-scan.
+			debugln("AFHDS2A sync: re-sync timeout on ch=%d, re-scanning", hopping_frequency[hopping_frequency_no]);
+			afhds2a_sync_retry = -12;
+			afhds2a_sync_rx_armed = 0;
+			A7105_Strobe(A7105_STANDBY);
+			A7105_SetTxRxMode(RX_EN);
+			A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
+			A7105_Strobe(A7105_RX);
+			phase = AFHDS2A_SYNC_LISTEN;
 			return 3000;
 		case AFHDS2A_SYNC_RUN:
 			// Transmit our sticks on the primary's current channel (index set by the last re-sync).
