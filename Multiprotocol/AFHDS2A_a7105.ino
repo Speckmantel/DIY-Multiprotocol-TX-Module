@@ -567,7 +567,12 @@ void AFHDS2A_init()
 	MProtocol_id = AFHDS2A_SYNC_TXID;			// fixed TX ID => fixed hop table, independent of RX_num
 	set_rx_tx_addr(MProtocol_id);
 	AFHDS2A_calc_channels();					// hop table derived from the forced TX ID (matches primary)
-	memcpy(rx_id, (const uint8_t *)AFHDS2A_SYNC_RXID, 4);	// bound receiver, no binding needed
+	// Bound receiver ID, no binding needed. AFHDS2A_SYNC_RXID is a 32-bit value in on-air
+	// byte order (MSB first), same convention as AFHDS2A_SYNC_TXID / set_rx_tx_addr().
+	rx_id[0] = (AFHDS2A_SYNC_RXID >> 24) & 0xFF;
+	rx_id[1] = (AFHDS2A_SYNC_RXID >> 16) & 0xFF;
+	rx_id[2] = (AFHDS2A_SYNC_RXID >>  8) & 0xFF;
+	rx_id[3] = (AFHDS2A_SYNC_RXID      ) & 0xFF;
 	packet_count = 0;
 	bind_phase = 0;
 	phase = AFHDS2A_SYNC_LISTEN;
