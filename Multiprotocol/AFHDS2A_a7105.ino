@@ -50,6 +50,7 @@ static int8_t  afhds2a_sync_retry;		// scan dwell counter while searching for th
 static uint16_t afhds2a_sync_txcount;	// transmitted-slot counter, for the debug heartbeat
 static uint8_t  afhds2a_sync_rxok;		// slots in the current heartbeat window where the primary was still heard
 static uint8_t  afhds2a_sync_poll_cnt;	// oversample ticks spent listening for the primary this slot
+static uint8_t  afhds2a_sync_miss;		// consecutive slots the primary was not heard (triggers re-scan)
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -507,9 +508,10 @@ uint16_t AFHDS2A_callback()
 					debugln("AFHDS2A sync: LOCKED, next hop=%d", hopping_frequency_no);
 					phase = AFHDS2A_SYNC_RUN;
 					afhds2a_sync_rx_armed = 0;
-					// Primary just transmitted; its next packet is in 3850us on channel[next_hop].
-					// Schedule our transmit AFHDS2A_SYNC_LEAD us ahead of it.
-					return 3850 - AFHDS2A_SYNC_LEAD;
+					afhds2a_sync_miss = 0;					// fresh lock
+					// DATA_READY fires at the END of the primary's packet, so its next packet starts
+					// only (3850-AIRTIME) from now. Schedule our first TX AFHDS2A_SYNC_LEAD ahead of it.
+					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
 				}
 				// Not our primary (noise / other traffic): re-arm RX on the SAME channel and keep
 				// dwelling, so a stray packet can't make us skip past the channel the primary uses.
@@ -561,10 +563,12 @@ uint16_t AFHDS2A_callback()
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
-				{	// primary heard: re-pin to its real arrival. The scheduler accumulates our
-					// returns, so returning (3850-LEAD) now lands the next TX LEAD before the
-					// primary's next packet no matter which tick caught it -> auto phase-correction.
+				{	// primary heard: re-pin to its packet START. DATA_READY fires at the END of the
+					// primary's packet, so its next packet starts only (3850-AIRTIME) from now. The
+					// scheduler accumulates our returns, so this lands the next TX exactly LEAD before
+					// the primary's next packet no matter which tick caught it -> one-slot phase-lock.
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
+					afhds2a_sync_miss = 0;					// primary heard: lock is healthy
 					afhds2a_sync_rxok++;
 					if(!(++afhds2a_sync_txcount & 0xFF))
 					{
@@ -572,7 +576,7 @@ uint16_t AFHDS2A_callback()
 						afhds2a_sync_rxok = 0;
 					}
 					phase = AFHDS2A_SYNC_RUN;
-					return 3850 - AFHDS2A_SYNC_LEAD;
+					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
 				}
 				A7105_Strobe(A7105_STANDBY);				// stray frame: re-arm and keep oversampling
 				A7105_SetTxRxMode(RX_EN);
@@ -580,13 +584,27 @@ uint16_t AFHDS2A_callback()
 			}
 			if(++afhds2a_sync_poll_cnt < (AFHDS2A_SYNC_LISTEN_MAX / AFHDS2A_SYNC_POLL))
 				return AFHDS2A_SYNC_POLL;					// not yet: next oversample tick
-			// Primary not heard this slot: free-run one nominal ~3850us slot, advance the channel.
-			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
+			// Primary not heard this slot.
 			if(!(++afhds2a_sync_txcount & 0xFF))
 			{
 				debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 MISS", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
 				afhds2a_sync_rxok = 0;
 			}
+			if(++afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
+			{	// Lock lost: stop free-running blind and drop back to the scan phase to re-acquire.
+				debugln("AFHDS2A sync: lock lost after %d misses, re-scanning", afhds2a_sync_miss);
+				afhds2a_sync_miss = 0;
+				afhds2a_sync_retry = -12;				// start a full dwell, like init
+				afhds2a_sync_rx_armed = 0;
+				A7105_Strobe(A7105_STANDBY);
+				A7105_SetTxRxMode(RX_EN);
+				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
+				A7105_Strobe(A7105_RX);
+				phase = AFHDS2A_SYNC_LISTEN;
+				return 3000;							// resume scanning at the ~3ms poll rate
+			}
+			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
+			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			phase = AFHDS2A_SYNC_RUN;
 			return 3850 - AFHDS2A_WRITE_TIME - (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
 #endif

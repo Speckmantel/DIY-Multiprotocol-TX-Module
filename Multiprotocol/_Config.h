@@ -403,8 +403,18 @@
 												// smaller = tighter lock (floor ~100us: one SPI poll +
 												// main-loop overhead). The slot self-corrects, so this
 												// only bounds per-slot jitter.
-	#define AFHDS2A_SYNC_LISTEN_MAX	1600			// give up listening after this long (us) past our TX
-												// and free-run one nominal slot. Must stay < 3850-WRITE.
+	#define AFHDS2A_SYNC_AIRTIME	1350			// on-air duration (us) of one AFHDS2A packet. The RX
+												// flags "data ready" at the END of the primary's packet,
+												// but the primary's NEXT packet starts 3850us after this
+												// one STARTED, i.e. only (3850-AIRTIME) after we detect
+												// it. Re-pin uses this so our TX lands LEAD before the
+												// primary. If lock fails, sweep this ~1200..1500.
+	#define AFHDS2A_SYNC_LISTEN_MAX	2000			// give up listening after this long (us) past our TX
+												// and free-run one nominal slot. Must stay < 3850-WRITE
+												// and comfortably past LEAD+AIRTIME-WRITE_TIME.
+	#define AFHDS2A_SYNC_MAX_MISS	20				// after this many consecutive slots without hearing the
+												// primary, drop back to the scan phase to re-acquire
+												// instead of free-running blind forever.
 #endif
 #define HOTT_FW_TELEMETRY			// Forward received telemetry packets to be decoded by erskyTX and OpenTX
 #define BAYANG_RX_TELEMETRY			// Forward channels data to TX
