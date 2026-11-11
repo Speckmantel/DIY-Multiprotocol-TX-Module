@@ -46,6 +46,7 @@ enum{
 #ifdef AFHDS2A_LISTEN_SYNC
 static uint8_t afhds2a_sync_rx_armed;	// 1 once the A7105 has been strobed into RX for listening
 static int8_t  afhds2a_sync_retry;		// scan dwell counter while searching for the primary
+static uint16_t afhds2a_sync_txcount;	// transmitted-slot counter, for the debug heartbeat
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -492,32 +493,33 @@ uint16_t AFHDS2A_callback()
 #ifdef AFHDS2A_LISTEN_SYNC
 		case AFHDS2A_SYNC_LISTEN:
 			// Scan the shared hop table in RX until we overhear the primary remote.
-			// The radio was armed into RX in init / on the last hop; we just poll here and
-			// only re-strobe RX when we move to the next channel (same idiom as AFHDS2A_Rx).
+			// The A7105 goes idle after it receives one packet, so EVERY read must be
+			// followed by a fresh RX strobe or the receiver goes permanently deaf.
 			if(AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
 				{	// LOCKED: hi-nibble of byte 34 = the primary's next hop index
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
-					LED_on;								// solid LED => locked onto the primary
+					debugln("AFHDS2A sync: LOCKED, next hop=%d", hopping_frequency_no);
 					phase = AFHDS2A_SYNC_RUN;
 					afhds2a_sync_rx_armed = 0;
 					// Primary just transmitted; its next packet is in 3850us on channel[next_hop].
 					// Schedule our transmit AFHDS2A_SYNC_LEAD us ahead of it.
 					return 3850 - AFHDS2A_SYNC_LEAD;
 				}
-				afhds2a_sync_retry = 0;				// heard something, but not our primary: keep scanning
+				afhds2a_sync_retry = 10;			// not ours: force an immediate hop + re-arm below
 			}
 			// Dwell >62ms per channel (one full primary hop cycle) so we are guaranteed to
-			// catch it, then hop to the next channel and re-arm RX.
+			// catch it, then hop to the next channel and re-strobe RX (the only place RX is re-armed).
 			if(afhds2a_sync_retry++ >= 10)
 			{
 				afhds2a_sync_retry = -160;			// ~160*385us ≈ 62ms dwell on each channel
 				hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
+				A7105_Strobe(A7105_STANDBY);
+				A7105_SetTxRxMode(RX_EN);
 				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
 				A7105_Strobe(A7105_RX);
-				LED_toggle;							// blink while searching
 			}
 			return 385;
 		case AFHDS2A_SYNC_RUN:
@@ -532,6 +534,8 @@ uint16_t AFHDS2A_callback()
 			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
 			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no++]);
 			hopping_frequency_no &= 0x0F;
+			if(!(++afhds2a_sync_txcount & 0xFF))		// ~every 256 slots (~1s)
+				debugln("AFHDS2A sync: TX running, hop=%d", hopping_frequency_no);
 			afhds2a_sync_rx_armed = 0;
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
 			return AFHDS2A_WRITE_TIME;
@@ -573,7 +577,7 @@ void AFHDS2A_init()
 	A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[0]);
 	A7105_SetTxRxMode(RX_EN);
 	A7105_Strobe(A7105_RX);
-	LED_off;
+	debugln("AFHDS2A sync: listening for primary TXID %08lX", (uint32_t)AFHDS2A_SYNC_TXID);
 	return;
 #endif
 
