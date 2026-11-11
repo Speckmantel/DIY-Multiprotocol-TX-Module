@@ -499,11 +499,6 @@ uint16_t AFHDS2A_callback()
 			if(AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
-				// Log every received AFHDS2A frame so we can see what is on the air and why it
-				// is (or isn't) our primary: type byte + the 4-byte TX ID carried in packet[1..4].
-				debugln("AFHDS2A sync: RX ch=%d type=%02X txid=%02X%02X%02X%02X",
-						hopping_frequency[hopping_frequency_no], packet[0],
-						packet[1], packet[2], packet[3], packet[4]);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
 				{	// LOCKED: hi-nibble of byte 34 = the primary's next hop index
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
@@ -514,7 +509,11 @@ uint16_t AFHDS2A_callback()
 					// Schedule our transmit AFHDS2A_SYNC_LEAD us ahead of it.
 					return 3850 - AFHDS2A_SYNC_LEAD;
 				}
-				afhds2a_sync_retry = 10;			// not ours: force an immediate hop + re-arm below
+				// Not our primary (noise / other traffic): re-arm RX on the SAME channel and keep
+				// dwelling, so a stray packet can't make us skip past the channel the primary uses.
+				A7105_Strobe(A7105_STANDBY);
+				A7105_SetTxRxMode(RX_EN);
+				A7105_Strobe(A7105_RX);
 			}
 			// Dwell >62ms per channel (one full primary hop cycle) so we are guaranteed to
 			// catch it, then hop to the next channel and re-strobe RX (the only place RX is re-armed).
@@ -526,8 +525,8 @@ uint16_t AFHDS2A_callback()
 				A7105_SetTxRxMode(RX_EN);
 				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
 				A7105_Strobe(A7105_RX);
-				if(!(++afhds2a_sync_txcount & 0x07))	// ~every 8 hops (~0.5s): proves we are scanning
-					debugln("AFHDS2A sync: searching, ch=%d", hopping_frequency[hopping_frequency_no]);
+				if(!(++afhds2a_sync_txcount & 0x3F))	// ~every 64 hops (~4s): just proves we are alive
+					debugln("AFHDS2A sync: searching...");
 			}
 			return 385;
 		case AFHDS2A_SYNC_RUN:
