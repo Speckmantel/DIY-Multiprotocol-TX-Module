@@ -540,11 +540,13 @@ uint16_t AFHDS2A_callback()
 			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
 			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no]);
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
-			return AFHDS2A_WRITE_TIME;				// let our packet finish, then listen for the primary
+			return AFHDS2A_SYNC_AIRTIME;				// only our own packet airtime, so we switch to RX
+													// ~(LEAD-AIRTIME) before the primary and don't miss
+													// its preamble (WRITE_TIME was too late: ~100us margin)
 		case AFHDS2A_SYNC_RUN|AFHDS2A_WAIT_WRITE:
 			// Our packet is sent. Wait briefly for TX to finish, switch to RX, then start
 			// oversampling for the primary (AFHDS2A_SYNC_POLL_WAIT) instead of one long blocking
-			// wait. LEAD must stay > AFHDS2A_WRITE_TIME so the primary arrives after we start RX.
+			// wait. LEAD must stay > AFHDS2A_SYNC_AIRTIME so we are in RX before the primary starts.
 			start=micros();
 			while ((uint16_t)((uint16_t)micros()-start) < 700)		// bounded wait for TX completion
 				if(!(A7105_ReadReg(A7105_00_MODE) & 0x01))
@@ -606,7 +608,7 @@ uint16_t AFHDS2A_callback()
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
 			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			phase = AFHDS2A_SYNC_RUN;
-			return 3850 - AFHDS2A_WRITE_TIME - (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
+			return 3850 - AFHDS2A_SYNC_AIRTIME - (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
 #endif
 	}
 	return 3850;

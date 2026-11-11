@@ -409,9 +409,10 @@
 												// one STARTED, i.e. only (3850-AIRTIME) after we detect
 												// it. Re-pin uses this so our TX lands LEAD before the
 												// primary. If lock fails, sweep this ~1200..1500.
-	#define AFHDS2A_SYNC_LISTEN_MAX	2000			// give up listening after this long (us) past our TX
-												// and free-run one nominal slot. Must stay < 3850-WRITE
-												// and comfortably past LEAD+AIRTIME-WRITE_TIME.
+	#define AFHDS2A_SYNC_LISTEN_MAX	2200			// give up listening this long (us) after we switch to RX
+												// (which is ~AIRTIME past our TX) and free-run one slot.
+												// Must be > LEAD (so the window reaches the primary) and
+												// AIRTIME+LISTEN_MAX must stay < 3850.
 	#define AFHDS2A_SYNC_MAX_MISS	20				// after this many consecutive slots without hearing the
 												// primary, drop back to the scan phase to re-acquire
 												// instead of free-running blind forever.
