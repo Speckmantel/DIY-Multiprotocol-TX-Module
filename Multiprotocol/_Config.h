@@ -404,6 +404,9 @@
 												// smaller = tighter lock (floor ~100us: one SPI poll +
 												// main-loop overhead). The slot self-corrects, so this
 												// only bounds per-slot jitter.
+	#define AFHDS2A_SYNC_CH_MIN	1				// full-spectrum learn sweeps physical A7105 channels
+	#define AFHDS2A_SYNC_CH_MAX	164				// MIN..MAX (AFHDS2A uses 1..164) to discover the primary's
+												// real hop set, since it does not match our calc_channels.
 	#define AFHDS2A_SYNC_RESYNC_MAX	6000			// after coarse scan finds the primary's channel, listen
 												// RX-only (no TX) up to this long (us) - just over one
 												// slot - to catch its next packet with fine timing before
