@@ -589,7 +589,7 @@ void AFHDS2A_init()
 	bind_phase = 0;
 	phase = AFHDS2A_SYNC_LISTEN;
 	afhds2a_sync_rx_armed = 0;
-	afhds2a_sync_retry = -160;								// start a full dwell on channel[0]
+	afhds2a_sync_retry = -12;								// start a full dwell on channel[0]
 	hopping_frequency_no = 0;
 	packet_sent = 0;
 	// Arm the receiver on the first hop channel so AFHDS2A_SYNC_LISTEN can hear the primary
