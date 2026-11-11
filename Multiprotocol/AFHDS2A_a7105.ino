@@ -662,11 +662,16 @@ uint16_t AFHDS2A_callback()
 				return 3000;							// resume scanning at the ~3ms poll rate
 			}
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
+			// CRITICAL: keep this slot exactly 3850us so a miss does NOT slip our phase relative
+			// to the primary. elapsed = AIRTIME (SYNC_RUN) + (LEAD-PREPOLL) coarse wait + the fine
+			// polls that actually returned a delay. poll_cnt was just bumped to LISTEN_MAX/POLL by
+			// the check that FAILED here, but that last tick returned no POLL delay -> only
+			// (poll_cnt-1) polls elapsed. Using poll_cnt would shed one POLL (200us) per miss and
+			// walk us off the late edge of the detection window, cascading into a full re-scan.
 			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			phase = AFHDS2A_SYNC_RUN;
-			// elapsed this slot = AIRTIME (SYNC_RUN) + (LEAD-PREPOLL) coarse wait + fine polls
 			return 3850 - AFHDS2A_SYNC_AIRTIME - (AFHDS2A_SYNC_LEAD - AFHDS2A_SYNC_PREPOLL)
-					- (uint16_t)afhds2a_sync_poll_cnt*AFHDS2A_SYNC_POLL;
+					- (uint16_t)(afhds2a_sync_poll_cnt - 1)*AFHDS2A_SYNC_POLL;
 #endif
 	}
 	return 3850;
