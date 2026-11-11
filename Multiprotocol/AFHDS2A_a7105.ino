@@ -498,6 +498,11 @@ uint16_t AFHDS2A_callback()
 			if(AFHDS2A_SYNC_DATA_READY())
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
+				// Log every received AFHDS2A frame so we can see what is on the air and why it
+				// is (or isn't) our primary: type byte + the 4-byte TX ID carried in packet[1..4].
+				debugln("AFHDS2A sync: RX ch=%d type=%02X txid=%02X%02X%02X%02X",
+						hopping_frequency[hopping_frequency_no], packet[0],
+						packet[1], packet[2], packet[3], packet[4]);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
 				{	// LOCKED: hi-nibble of byte 34 = the primary's next hop index
 					hopping_frequency_no = (packet[34] >> 4) & 0x0F;
