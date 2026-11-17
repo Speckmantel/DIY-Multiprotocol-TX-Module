@@ -668,10 +668,17 @@ uint16_t AFHDS2A_callback()
 				debugln("AFHDS2A sync: lost, keep transmitting. airtime=%d ch=%d frames_in_window=%d last_b0=%02X",
 						afhds2a_sync_airtime, hopping_frequency[hopping_frequency_no], afhds2a_sync_dbg_seen, afhds2a_sync_dbg_b0);
 			if(afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
-			{	// Lock lost: do NOT stop transmitting. Keep free-running our own packets every slot and
-				// sweep the listen channel offset so the primary can be re-acquired on the fly.
+			{	// Lock lost: do NOT stop transmitting. Keep free-running our own packets every slot.
 				afhds2a_sync_dbg_seen = 0;
+#if AFHDS2A_SYNC_LEAD > AFHDS2A_SYNC_AIRTIME
+				// Primary-OFF recovery: the primary should be audible when it is on, so not hearing it
+				// means it is gone. Sweep the listen channel offset to re-find it when it returns.
 				afhds2a_sync_listen_ofs = (afhds2a_sync_listen_ofs + 1) & 0x0F;	// 0 = listen on our TX channel
+#else
+				// Overlap/capture mode (small LEAD): our packet covers the primary's, so we CANNOT hear
+				// it even though it is on. Do NOT sweep - keep listen_ofs=0 so we transmit cleanly on
+				// every channel in sequence (+1/slot) and never jump the hop index on a stray re-acquire.
+#endif
 			}
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
 			// CRITICAL: keep this slot exactly 3850us so a miss does NOT slip our phase relative to the
