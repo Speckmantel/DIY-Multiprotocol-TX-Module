@@ -56,6 +56,7 @@ static uint16_t afhds2a_sync_tx_start;	// micros() at our TX, to measure real pa
 static uint16_t afhds2a_sync_airtime;	// measured airtime (us) of our last packet
 static uint8_t  afhds2a_sync_dbg_seen;	// DATA_READY events seen in the run window since last lock
 static uint8_t  afhds2a_sync_dbg_b0;		// packet[0] of the last frame seen in the run window
+static uint8_t  afhds2a_sync_listen_ofs;	// lock lost: hop-index offset (from our TX index) we listen on this slot
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 #endif
@@ -602,6 +603,13 @@ uint16_t AFHDS2A_callback()
 			afhds2a_sync_airtime = (uint16_t)micros() - afhds2a_sync_tx_start;	// real airtime of our packet
 			A7105_SetPower();
 			A7105_SetTxRxMode(RX_EN);
+			if(afhds2a_sync_listen_ofs)
+			{	// Lock lost: listen on a different hop index than the one we just sent on. The offset
+				// is bumped every missed slot, so within 16 slots we try every index offset the primary
+				// could be at, while still transmitting our own packets every slot.
+				A7105_Strobe(A7105_STANDBY);
+				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[(hopping_frequency_no + afhds2a_sync_listen_ofs) & 0x0F]);
+			}
 			A7105_Strobe(A7105_RX);						// RX armed now; chip latches the primary when it arrives
 			afhds2a_sync_poll_cnt = 0;
 			phase = AFHDS2A_SYNC_POLL_WAIT;
@@ -622,7 +630,11 @@ uint16_t AFHDS2A_callback()
 					// primary's packet, so its next packet starts only (3850-AIRTIME) from now. The
 					// scheduler accumulates our returns, so this lands the next TX exactly LEAD before
 					// the primary's next packet no matter which tick caught it -> one-slot phase-lock.
-					hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;	// channel we heard = index now; advance
+					if(afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
+						debugln("AFHDS2A sync: re-acquired primary (ofs=%d)", afhds2a_sync_listen_ofs);
+					// channel we heard = primary's index now (TX index + listen offset); advance
+					hopping_frequency_no = (hopping_frequency_no + afhds2a_sync_listen_ofs + 1) & 0x0F;
+					afhds2a_sync_listen_ofs = 0;			// back to listening on our own TX channel
 					afhds2a_sync_miss = 0;					// primary heard: lock is healthy
 					afhds2a_sync_dbg_seen = 0;
 					afhds2a_sync_rxok++;
@@ -646,20 +658,14 @@ uint16_t AFHDS2A_callback()
 				debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 MISS", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
 				afhds2a_sync_rxok = 0;
 			}
-			if(++afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
-			{	// Lock lost: stop free-running blind and drop back to the scan phase to re-acquire.
-				debugln("AFHDS2A sync: lost. airtime=%d ch=%d frames_in_window=%d last_b0=%02X",
+			if(afhds2a_sync_miss < AFHDS2A_SYNC_MAX_MISS && ++afhds2a_sync_miss == AFHDS2A_SYNC_MAX_MISS)
+				debugln("AFHDS2A sync: lost, keep transmitting. airtime=%d ch=%d frames_in_window=%d last_b0=%02X",
 						afhds2a_sync_airtime, hopping_frequency[hopping_frequency_no], afhds2a_sync_dbg_seen, afhds2a_sync_dbg_b0);
-				afhds2a_sync_miss = 0;
+			if(afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
+			{	// Lock lost: do NOT stop transmitting. Keep free-running our own packets every slot and
+				// sweep the listen channel offset so the primary can be re-acquired on the fly.
 				afhds2a_sync_dbg_seen = 0;
-				afhds2a_sync_retry = -12;				// start a full dwell, like init
-				afhds2a_sync_rx_armed = 0;
-				A7105_Strobe(A7105_STANDBY);
-				A7105_SetTxRxMode(RX_EN);
-				A7105_WriteReg(A7105_0F_CHANNEL, hopping_frequency[hopping_frequency_no]);
-				A7105_Strobe(A7105_RX);
-				phase = AFHDS2A_SYNC_LISTEN;
-				return 3000;							// resume scanning at the ~3ms poll rate
+				afhds2a_sync_listen_ofs = (afhds2a_sync_listen_ofs + 1) & 0x0F;	// 0 = listen on our TX channel
 			}
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
 			// CRITICAL: keep this slot exactly 3850us so a miss does NOT slip our phase relative
@@ -696,6 +702,8 @@ void AFHDS2A_init()
 	phase = AFHDS2A_SYNC_LISTEN;								// scan our (correct) table for the primary
 	afhds2a_sync_rx_armed = 0;
 	afhds2a_sync_retry = -12;								// start a full dwell on channel[0]
+	afhds2a_sync_listen_ofs = 0;
+	afhds2a_sync_miss = 0;
 	hopping_frequency_no = 0;
 	packet_sent = 0;
 	// Arm the receiver on the first hop channel so AFHDS2A_SYNC_LISTEN can hear the primary

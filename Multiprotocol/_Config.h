@@ -421,8 +421,9 @@
 												// coarse wait). Must be > PREPOLL plus margin for jitter,
 												// and (LEAD-PREPOLL)+AIRTIME+LISTEN_MAX must stay < 3850.
 	#define AFHDS2A_SYNC_MAX_MISS	20				// after this many consecutive slots without hearing the
-												// primary, drop back to the scan phase to re-acquire
-												// instead of free-running blind forever.
+												// primary, the lock is considered lost: we keep
+												// transmitting every slot and sweep the listen channel
+												// to re-acquire the primary on the fly.
 #endif
 #define HOTT_FW_TELEMETRY			// Forward received telemetry packets to be decoded by erskyTX and OpenTX
 #define BAYANG_RX_TELEMETRY			// Forward channels data to TX
