@@ -392,12 +392,19 @@
 #ifdef AFHDS2A_LISTEN_SYNC
 	#define AFHDS2A_SYNC_TXID	0x4C740A7D			// primary TX ID (on-air bytes 4C 74 0A 7D)
 	#define AFHDS2A_SYNC_RXID	0xB0B0A541			// bound receiver ID (on-air bytes B0 B0 A5 41)
-	#define AFHDS2A_SYNC_LEAD	1900				// transmit this many us before the primary. Both packets
-												// (~AIRTIME each) plus gaps must fit in the 3850us slot, so
-												// LEAD must sit in (AIRTIME, 3850-AIRTIME): big enough that
-												// our TX finishes and we are in RX before the primary,
-												// small enough that the primary's packet still ends before
-												// the slot does. With AIRTIME~1470 that is ~1700..2180.
+	#define AFHDS2A_SYNC_LEAD	1900				// transmit this many us before the primary's packet starts.
+												// Two regimes:
+												//  - LEAD > AIRTIME (~1700..2180): our packet finishes and we
+												//    switch to RX before the primary, so we keep hearing it
+												//    and stay phase-locked. The receiver takes whichever
+												//    packet it sees first (= ours).
+												//  - LEAD small (e.g. 100): our packet overlaps the primary's
+												//    on air, aiming to win by capture effect (our preamble
+												//    arrives first). We then can NOT hear the primary, so the
+												//    lock free-runs on our own crystal and may slowly drift;
+												//    the receiver that wins depends on signal strength.
+												// Any value is now timing-safe; LEAD must stay < 3850-AIRTIME
+												// (~2380) so the success-path re-pin delay stays positive.
 	#define AFHDS2A_SYNC_POLL	200				// fine-poll the receiver this often (us) in the detection
 												// window. Reaction latency <= this; the slot self-corrects
 												// so it only bounds per-slot jitter.

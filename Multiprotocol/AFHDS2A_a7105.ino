@@ -595,7 +595,8 @@ uint16_t AFHDS2A_callback()
 		case AFHDS2A_SYNC_RUN|AFHDS2A_WAIT_WRITE:
 			// Our packet is sent. Wait briefly for TX to finish, switch to RX, then start
 			// oversampling for the primary (AFHDS2A_SYNC_POLL_WAIT) instead of one long blocking
-			// wait. LEAD must stay > AFHDS2A_SYNC_AIRTIME so we are in RX before the primary starts.
+			// wait. With LEAD > AIRTIME we are in RX before the primary; with a small LEAD our packet
+			// overlaps the primary's (capture-effect mode) and we simply won't hear it - that is fine.
 			start=micros();
 			while ((uint16_t)((uint16_t)micros()-start) < 700)		// bounded wait for TX completion
 				if(!(A7105_ReadReg(A7105_00_MODE) & 0x01))
@@ -614,8 +615,13 @@ uint16_t AFHDS2A_callback()
 			afhds2a_sync_poll_cnt = 0;
 			phase = AFHDS2A_SYNC_POLL_WAIT;
 			// ONE long coarse wait up to ~PREPOLL before the primary is due (the main loop services serial
-			// here, so no "Force update" spam), THEN fine-poll the short detection window.
-			return AFHDS2A_SYNC_LEAD - AFHDS2A_SYNC_PREPOLL;
+			// here, so no "Force update" spam), THEN fine-poll the short detection window. When LEAD is
+			// small (<= PREPOLL) the primary overlaps our own packet, so there is nothing to wait for:
+			// go straight to the fine poll instead of underflowing this delay to a ~65ms slot.
+			{
+				int16_t coarse = (int16_t)AFHDS2A_SYNC_LEAD - (int16_t)AFHDS2A_SYNC_PREPOLL;
+				return coarse > (int16_t)AFHDS2A_SYNC_POLL ? (uint16_t)coarse : AFHDS2A_SYNC_POLL;
+			}
 		case AFHDS2A_SYNC_POLL_WAIT:
 			// Oversample the receiver: one quick check per short tick, so we react within
 			// AFHDS2A_SYNC_POLL us of the primary actually landing and the main loop keeps running
@@ -668,16 +674,16 @@ uint16_t AFHDS2A_callback()
 				afhds2a_sync_listen_ofs = (afhds2a_sync_listen_ofs + 1) & 0x0F;	// 0 = listen on our TX channel
 			}
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
-			// CRITICAL: keep this slot exactly 3850us so a miss does NOT slip our phase relative
-			// to the primary. elapsed = AIRTIME (SYNC_RUN) + (LEAD-PREPOLL) coarse wait + the fine
-			// polls that actually returned a delay. poll_cnt was just bumped to LISTEN_MAX/POLL by
-			// the check that FAILED here, but that last tick returned no POLL delay -> only
-			// (poll_cnt-1) polls elapsed. Using poll_cnt would shed one POLL (200us) per miss and
-			// walk us off the late edge of the detection window, cascading into a full re-scan.
+			// CRITICAL: keep this slot exactly 3850us so a miss does NOT slip our phase relative to the
+			// primary. Measure it straight from our own TX (afhds2a_sync_tx_start) instead of rebuilding
+			// it from the LEAD/PREPOLL/poll constants: that reconstruction underflowed for a small LEAD
+			// (<= PREPOLL). This way the slot is exact for ANY LEAD, down to the poll floor.
 			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			phase = AFHDS2A_SYNC_RUN;
-			return 3850 - AFHDS2A_SYNC_AIRTIME - (AFHDS2A_SYNC_LEAD - AFHDS2A_SYNC_PREPOLL)
-					- (uint16_t)(afhds2a_sync_poll_cnt - 1)*AFHDS2A_SYNC_POLL;
+			{
+				uint16_t elapsed = (uint16_t)micros() - afhds2a_sync_tx_start;	// time since this slot's TX
+				return elapsed < (uint16_t)(3850 - AFHDS2A_SYNC_POLL) ? (uint16_t)(3850 - elapsed) : AFHDS2A_SYNC_POLL;
+			}
 #endif
 	}
 	return 3850;
