@@ -392,7 +392,7 @@
 #ifdef AFHDS2A_LISTEN_SYNC
 	#define AFHDS2A_SYNC_TXID	0x4C740A7D			// primary TX ID (on-air bytes 4C 74 0A 7D)
 	#define AFHDS2A_SYNC_RXID	0xB0B0A541			// bound receiver ID (on-air bytes B0 B0 A5 41)
-	#define AFHDS2A_SYNC_LEAD	1900				// transmit this many us before the primary's packet starts.
+	#define AFHDS2A_SYNC_LEAD	100				// transmit this many us before the primary's packet starts.
 												// Two regimes:
 												//  - LEAD > AIRTIME (~1700..2180): our packet finishes and we
 												//    switch to RX before the primary, so we keep hearing it
