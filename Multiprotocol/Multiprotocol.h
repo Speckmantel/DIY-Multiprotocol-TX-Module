@@ -709,9 +709,11 @@ enum MultiPacketTypes
 //********************
 #if defined(STM32_BOARD) && (defined (DEBUG_SERIAL) || defined (ARDUINO_MULTI_DEBUG))
 	uint16_t debug_time=0;
-	char debug_buf[64];
-	#define debug(msg, ...)  { sprintf(debug_buf, msg, ##__VA_ARGS__); Serial.write(debug_buf);}
-	#define debugln(msg, ...)  { sprintf(debug_buf, msg "\r\n", ##__VA_ARGS__); Serial.write(debug_buf);}
+	char debug_buf[128];
+	// snprintf, not sprintf: an over-long message used to run past debug_buf and overwrite the
+	// globals behind it (e.g. hopping_frequency[]). Too-long messages are now truncated instead.
+	#define debug(msg, ...)  { snprintf(debug_buf, sizeof(debug_buf), msg, ##__VA_ARGS__); Serial.write(debug_buf);}
+	#define debugln(msg, ...)  { snprintf(debug_buf, sizeof(debug_buf), msg "\r\n", ##__VA_ARGS__); Serial.write(debug_buf);}
 	#define debug_time(msg)  { uint16_t debug_time_TCNT1=TCNT1; debug_time=debug_time_TCNT1-debug_time; debug(msg "%u", debug_time>>1); debug_time=debug_time_TCNT1; }
 	#define debugln_time(msg)  { uint16_t debug_time_TCNT1=TCNT1; debug_time=debug_time_TCNT1-debug_time; debug(msg "%u\r\n", debug_time>>1); debug_time=debug_time_TCNT1; }
 #else
