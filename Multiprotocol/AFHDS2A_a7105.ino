@@ -59,6 +59,23 @@ static uint8_t  afhds2a_sync_dbg_b0;		// packet[0] of the last frame seen in the
 static uint8_t  afhds2a_sync_listen_ofs;	// lock lost: hop-index offset (from our TX index) we listen on this slot
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
+static uint8_t  afhds2a_sync_idx_mismatch;	// heard frames where packet[34] disagreed with the channel-derived index
+
+// Primary's NEXT hop index for a frame just received while tuned to hop index heard_idx.
+// The primary announces it itself: hi-nibble of byte 34, validated by byte 36 (0x80 = next!=0,
+// 0x90 = next==0, see AFHDS2A_build_packet). That is authoritative; the channel-derived guess
+// (heard_idx+1) is only a fallback if the flags are absent.
+static uint8_t AFHDS2A_sync_next_hop(uint8_t heard_idx)
+{
+	uint8_t from_ch  = (heard_idx + 1) & 0x0F;
+	uint8_t from_pkt = (packet[34] >> 4) & 0x0F;
+	uint8_t flags    = packet[36] & 0x90;
+	if(!((flags == 0x80 && from_pkt) || (flags == 0x90 && !from_pkt)))
+		return from_ch;						// no valid hop info in the frame
+	if(from_pkt != from_ch)
+		afhds2a_sync_idx_mismatch++;
+	return from_pkt;
+}
 #endif
 
 static void AFHDS2A_calc_channels()
@@ -509,11 +526,12 @@ uint16_t AFHDS2A_callback()
 			{
 				A7105_ReadData(AFHDS2A_RXPACKET_SIZE);
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
-					{	// Channel found. We do not trust packet[34] (primary leaves it 0): the channel we
-					// caught the primary on IS its current hop index, because our table is correct. Coarse
-					// scan is stale, so advance to the next index and fine-listen there for the next packet.
-					debugln("AFHDS2A sync: caught idx=%d (freq=%d)", hopping_frequency_no, hopping_frequency[hopping_frequency_no]);
-					hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;	// advance to next hop
+				{	// Channel found. The frame announces the primary's next hop (packet[34]); coarse scan
+					// timing is stale, so tune to that hop and fine-listen there for the next packet.
+					uint8_t next = AFHDS2A_sync_next_hop(hopping_frequency_no);
+					debugln("AFHDS2A sync: caught dwell_idx=%d (freq=%d) next_hop=%d (pkt34=%02X pkt36=%02X)",
+							hopping_frequency_no, hopping_frequency[hopping_frequency_no], next, packet[34], packet[36]);
+					hopping_frequency_no = next;
 					afhds2a_sync_rx_armed = 0;
 					afhds2a_sync_poll_cnt = 0;
 					afhds2a_sync_dbg_seen = 0;
@@ -558,8 +576,9 @@ uint16_t AFHDS2A_callback()
 				afhds2a_sync_dbg_b0 = packet[0];
 				if(packet[0] == 0x58 && memcmp(&packet[1], rx_tx_addr, 4) == 0)
 				{	// precise lock: re-pin exactly as a running slot would, then start transmitting
-					hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;	// channel we heard = index now; advance
+					hopping_frequency_no = AFHDS2A_sync_next_hop(hopping_frequency_no);
 					debugln("AFHDS2A sync: LOCKED (fine), next hop=%d", hopping_frequency_no);
+					afhds2a_sync_idx_mismatch = 0;
 					afhds2a_sync_miss = 0;
 					afhds2a_sync_dbg_seen = 0;
 					phase = AFHDS2A_SYNC_RUN;
@@ -638,16 +657,17 @@ uint16_t AFHDS2A_callback()
 					// the primary's next packet no matter which tick caught it -> one-slot phase-lock.
 					if(afhds2a_sync_miss >= AFHDS2A_SYNC_MAX_MISS)
 						debugln("AFHDS2A sync: re-acquired primary (ofs=%d)", afhds2a_sync_listen_ofs);
-					// channel we heard = primary's index now (TX index + listen offset); advance
-					hopping_frequency_no = (hopping_frequency_no + afhds2a_sync_listen_ofs + 1) & 0x0F;
+					// next hop as announced by the primary (fallback: channel heard = TX index + listen offset, +1)
+					hopping_frequency_no = AFHDS2A_sync_next_hop((hopping_frequency_no + afhds2a_sync_listen_ofs) & 0x0F);
 					afhds2a_sync_listen_ofs = 0;			// back to listening on our own TX channel
 					afhds2a_sync_miss = 0;					// primary heard: lock is healthy
 					afhds2a_sync_dbg_seen = 0;
 					afhds2a_sync_rxok++;
 					if(!(++afhds2a_sync_txcount & 0xFF))
 					{
-						debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
+						debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 idx_mismatch=%d", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok, afhds2a_sync_idx_mismatch);
 						afhds2a_sync_rxok = 0;
+						afhds2a_sync_idx_mismatch = 0;
 					}
 					phase = AFHDS2A_SYNC_RUN;
 					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
