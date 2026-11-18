@@ -60,6 +60,36 @@ static uint8_t  afhds2a_sync_listen_ofs;	// lock lost: hop-index offset (from ou
 // A received frame is valid when the FEC, CRC and TRX-busy flags are all clear (same test the RX protocol uses)
 #define AFHDS2A_SYNC_DATA_READY() (!(A7105_ReadReg(A7105_00_MODE) & (1<<6 | 1<<5 | 1<<0)))
 static uint8_t  afhds2a_sync_idx_mismatch;	// heard frames where packet[34] disagreed with the channel-derived index
+static uint16_t afhds2a_sync_sched;		// sum of delays returned since this slot's SYNC_RUN (scheduler time, us)
+// --- TX channel diagnostics: prove which frequencies we really transmit on ---
+static uint16_t afhds2a_dbg_idx_mask;	// hop indices transmitted on in this heartbeat window
+static uint8_t  afhds2a_dbg_ch_bad;		// TX slots where the chip's channel register != table entry
+static uint8_t  afhds2a_dbg_ch_last_bad;	// last such register value
+static uint16_t afhds2a_dbg_tbl_sum;		// checksum of the hop table at init (detects runtime corruption)
+static uint16_t AFHDS2A_sync_tbl_sum()
+{
+	uint16_t s = 0;
+	for(uint8_t i=0; i<AFHDS2A_NUMFREQ; i++)
+		s = (s << 1 | s >> 15) ^ hopping_frequency[i];
+	return s;
+}
+static void AFHDS2A_sync_dbg_report()
+{
+	uint16_t sum = AFHDS2A_sync_tbl_sum();
+	debugln("AFHDS2A diag: idx_used=%04X ch_reg_bad=%d last_bad=%d table=%s",
+			afhds2a_dbg_idx_mask, afhds2a_dbg_ch_bad, afhds2a_dbg_ch_last_bad,
+			sum == afhds2a_dbg_tbl_sum ? "ok" : "CHANGED");
+	if(sum != afhds2a_dbg_tbl_sum)
+	{
+		debug("AFHDS2A diag: table now=");
+		for(uint8_t i=0; i<AFHDS2A_NUMFREQ; i++)
+			debug("%d ", hopping_frequency[i]);
+		debugln("");
+		afhds2a_dbg_tbl_sum = sum;
+	}
+	afhds2a_dbg_idx_mask = 0;
+	afhds2a_dbg_ch_bad = 0;
+}
 
 // Primary's NEXT hop index for a frame just received while tuned to hop index heard_idx.
 // The primary announces it itself: hi-nibble of byte 34, validated by byte 36 (0x80 = next!=0,
@@ -607,7 +637,17 @@ uint16_t AFHDS2A_callback()
 			AFHDS2A_build_packet(AFHDS2A_PACKET_STICKS);
 			A7105_WriteData(AFHDS2A_TXPACKET_SIZE, hopping_frequency[hopping_frequency_no]);
 			afhds2a_sync_tx_start = micros();			// to measure real airtime in WAIT_WRITE
+			{	// diag: what channel does the chip ACTUALLY have while transmitting?
+				uint8_t rb = A7105_ReadReg(A7105_0F_CHANNEL);
+				afhds2a_dbg_idx_mask |= 1 << (hopping_frequency_no & 0x0F);
+				if(hopping_frequency_no > 0x0F || rb != hopping_frequency[hopping_frequency_no])
+				{
+					afhds2a_dbg_ch_bad++;
+					afhds2a_dbg_ch_last_bad = rb;
+				}
+			}
 			phase = AFHDS2A_SYNC_RUN | AFHDS2A_WAIT_WRITE;
+			afhds2a_sync_sched = AFHDS2A_SYNC_AIRTIME;	// slot timebase starts at this callback's scheduled time
 			return AFHDS2A_SYNC_AIRTIME;				// only our own packet airtime, so we switch to RX
 													// ~(LEAD-AIRTIME) before the primary and don't miss
 													// its preamble (WRITE_TIME was too late: ~100us margin)
@@ -639,7 +679,9 @@ uint16_t AFHDS2A_callback()
 			// go straight to the fine poll instead of underflowing this delay to a ~65ms slot.
 			{
 				int16_t coarse = (int16_t)AFHDS2A_SYNC_LEAD - (int16_t)AFHDS2A_SYNC_PREPOLL;
-				return coarse > (int16_t)AFHDS2A_SYNC_POLL ? (uint16_t)coarse : AFHDS2A_SYNC_POLL;
+				uint16_t wait = coarse > (int16_t)AFHDS2A_SYNC_POLL ? (uint16_t)coarse : AFHDS2A_SYNC_POLL;
+				afhds2a_sync_sched += wait;
+				return wait;
 			}
 		case AFHDS2A_SYNC_POLL_WAIT:
 			// Oversample the receiver: one quick check per short tick, so we react within
@@ -668,6 +710,7 @@ uint16_t AFHDS2A_callback()
 						debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 idx_mismatch=%d", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok, afhds2a_sync_idx_mismatch);
 						afhds2a_sync_rxok = 0;
 						afhds2a_sync_idx_mismatch = 0;
+						AFHDS2A_sync_dbg_report();
 					}
 					phase = AFHDS2A_SYNC_RUN;
 					return 3850 - AFHDS2A_SYNC_AIRTIME - AFHDS2A_SYNC_LEAD;
@@ -677,12 +720,16 @@ uint16_t AFHDS2A_callback()
 				A7105_Strobe(A7105_RX);
 			}
 			if(++afhds2a_sync_poll_cnt < (AFHDS2A_SYNC_LISTEN_MAX / AFHDS2A_SYNC_POLL))
+			{
+				afhds2a_sync_sched += AFHDS2A_SYNC_POLL;
 				return AFHDS2A_SYNC_POLL;					// not yet: next oversample tick
+			}
 			// Primary not heard this slot.
 			if(!(++afhds2a_sync_txcount & 0xFF))
 			{
 				debugln("AFHDS2A sync: TX lead=%d primary_rx=%d/256 MISS", AFHDS2A_SYNC_LEAD, afhds2a_sync_rxok);
 				afhds2a_sync_rxok = 0;
+				AFHDS2A_sync_dbg_report();
 			}
 			if(afhds2a_sync_miss < AFHDS2A_SYNC_MAX_MISS && ++afhds2a_sync_miss == AFHDS2A_SYNC_MAX_MISS)
 				debugln("AFHDS2A sync: lost, keep transmitting. airtime=%d ch=%d frames_in_window=%d last_b0=%02X",
@@ -702,15 +749,13 @@ uint16_t AFHDS2A_callback()
 			}
 			// Still within tolerance: free-run one nominal ~3850us slot, advance the channel.
 			// CRITICAL: keep this slot exactly 3850us so a miss does NOT slip our phase relative to the
-			// primary. Measure it straight from our own TX (afhds2a_sync_tx_start) instead of rebuilding
-			// it from the LEAD/PREPOLL/poll constants: that reconstruction underflowed for a small LEAD
-			// (<= PREPOLL). This way the slot is exact for ANY LEAD, down to the poll floor.
+			// primary. The scheduler is cumulative (OCR1A += delay), so the slot length is the SUM of the
+			// delays we returned - not wall-clock micros(). Measuring from afhds2a_sync_tx_start (taken
+			// after build_packet+WriteData) stretched every free-run slot by that processing time, so in
+			// capture mode (small LEAD, every slot a miss) we drifted onto the primary's neighbouring hops.
 			hopping_frequency_no = (hopping_frequency_no + 1) & 0x0F;
 			phase = AFHDS2A_SYNC_RUN;
-			{
-				uint16_t elapsed = (uint16_t)micros() - afhds2a_sync_tx_start;	// time since this slot's TX
-				return elapsed < (uint16_t)(3850 - AFHDS2A_SYNC_POLL) ? (uint16_t)(3850 - elapsed) : AFHDS2A_SYNC_POLL;
-			}
+			return afhds2a_sync_sched < (uint16_t)(3850 - AFHDS2A_SYNC_POLL) ? (uint16_t)(3850 - afhds2a_sync_sched) : AFHDS2A_SYNC_POLL;
 #endif
 	}
 	return 3850;
@@ -725,6 +770,7 @@ void AFHDS2A_init()
 	MProtocol_id = AFHDS2A_SYNC_TXID;			// fixed TX ID => fixed hop table, independent of RX_num
 	set_rx_tx_addr(MProtocol_id);
 	AFHDS2A_calc_channels();					// hop table derived from the forced TX ID (matches primary)
+	afhds2a_dbg_tbl_sum = AFHDS2A_sync_tbl_sum();
 	// memcpy(rx_id, (const uint8_t *)AFHDS2A_SYNC_RXID, 4);	// bound receiver, no binding needed
 	rx_id[0] = (AFHDS2A_SYNC_RXID >> 24) & 0xFF;
   rx_id[1] = (AFHDS2A_SYNC_RXID >> 16) & 0xFF;
